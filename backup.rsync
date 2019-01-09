@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+
+#et -x
+
+# On using rsync for really efficient backups:
+# http://www.mikerubel.org/computers/rsync_snapshots/
+
+# On setting up a windows machine with an rsync daemon (service) :
+# http://www.gaztronics.net/rsync.php
+
+set -u
+
+export PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+USE_COMPRESSION=False
+RSYNC_OPTS=""
+VERBOSE=0
+
+function usage
+{
+    retval="$1"
+    echo "Usage: $0"
+    echo "    --srcdir /src/dir"
+    echo "    --dstdir /dest/dir"
+    echo "    --num-to-keep 365"
+    echo "    --verbose"
+    echo "    --rsync-opts rsopts"
+    echo "    --use-compression"
+    exit "$retval"
+}
+
+if tty -s
+then
+    ON_TTY=True
+    #TTY_OPTS="-v --progress --stats"
+    TTY_OPTS="--progress --stats"
+else
+    ON_TTY=False
+    TTY_OPTS="--stats"
+fi
+
+while [ "$#" -ge 1 ]
+do
+    case "$1" in
+	--rsync-opts)
+	    RSYNC_OPTS="$2"
+	    shift
+	    ;;
+	--srcdir)
+	    SRCDIR="$2"
+	    shift
+	    ;;
+	--dstdir)
+	    DSTDIR="$2"
+	    shift
+	    ;;
+	--num-to-keep)
+	    NUM_TO_KEEP="$2"
+	    shift
+	    ;;
+	--verbose)
+	    VERBOSE=$[$VERBOSE+1]
+	    ;;
+	--use-compression)
+	    USE_COMPRESSION=True
+	    ;;
+        --help|-h)
+            usage 0
+            ;;
+        *)
+            echo "$0: Unrecognized option: $1" 1>&2
+            usage 1
+            ;;
+    esac
+    shift
+done
+
+bad=False
+
+if [ -z "${SRCDIR:-}" ]
+then
+    echo Sorry, you must give a source directory with --srcdir
+    bad=True
+fi
+
+if [ -z "${DSTDIR:-}" ]
+then
+    echo Sorry, you must give a destination directory with --dstdir
+    bad=True
+fi
+
+if [ -z "${NUM_TO_KEEP:-}" ]
+then
+    echo Sorry, you must give a number of backups to retain with --num-to-keep
+    bad=True
+fi
+
+case "$bad" in
+    True)
+        echo "$0: One or more required options not specified" 1>&2
+        usage 1
+        ;;
+    False)
+        ;;
+    *)
+        echo "$0: Internal error: \$bad not True or False: $bad" 1>&2
+        exit 1
+        ;;
+esac
+
+case "$USE_COMPRESSION" in
+    True)
+        COMPRESS_FLAG="-z"
+        ;;
+    False)
+        COMPRESS_FLAG=""
+        ;;
+    *)
+        echo "$0: Internal error: \$USE_COMPRESSION not True or False: $USE_COMPRESSION" 1>&2
+        exit 1
+        ;;
+esac
+
+if ! mkdir -p "$DSTDIR"
+then
+    echo Sorry, mkdir -p "$DSTDIR" failed 1>&2
+    exit 1
+fi
+
+if ! cd "$DSTDIR"
+then
+    echo Sorry, cd "$DSTDIR" failed 1>&2
+    exit 1
+fi
+
+if [ -d backup."$NUM_TO_KEEP".complete ]
+then
+    # make room for some sliding, if the last directory already exists
+    rm -rf backup."$NUM_TO_KEEP".complete
+fi
+
+if [ -d "backup.1.complete" ]
+then
+    # slide them up a notch
+    for backup_no in $(seq $[$NUM_TO_KEEP-1] -1 1)
+    do
+	if [ "$VERBOSE" -ge 1 ]
+	then
+	    echo Checking backup $backup_no...
+	fi
+	if [ -d "backup.$backup_no.complete" ]
+	then
+	    if [ "$VERBOSE" -ge 1 ]
+	    then
+		echo Sliding backup $backup_no...
+	    fi
+	    backup_no_plus_1="$[$backup_no+1]"
+	    mv "backup.$backup_no.complete" "backup.$backup_no_plus_1.complete"
+	    if [ -d "backup.$backup_no" ]
+	    then
+		(
+		    echo "Both backup.$backup_no and backup.$backup_no.complete detected"
+		    echo "Will keep backup.$backup_no.complete, but delete backup.$backup_no"
+		) 1>&2
+		rm -rf "backup.$backup_no"
+	    fi
+	fi
+    done
+    if ! mkdir backup.1
+    then
+	echo Sorry, mkdir backup.1 failed 1>&2
+	exit 1
+    fi
+elif [ -d backup.1 ]
+then
+    (
+	echo "Incomplete backup detected - instead of sliding backups up a notch, instead"
+	echo "we'll try to get a complete backup using the prior incomplete one as"
+	echo "a starting point..."
+    ) 1>&2
+else
+    if ! mkdir backup.1
+    then
+	echo Sorry, mkdir backup.1 failed 1>&2
+	exit 1
+    fi
+fi
+
+echo "Backing up $SRCDIR to $DSTDIR..." 1>&2
+
+move_it=False
+
+if rsync \
+    $RSYNC_OPTS \
+    -a \
+    $TTY_OPTS \
+    $COMPRESS_FLAG \
+    --delete \
+    --link-dest=../backup.2.complete "$SRCDIR"/ backup.1
+then
+    move_it=True
+else
+    case "$?" in
+        23)
+            # This means some files gave permission denied - assume that's OK
+            move_it=True
+            ;;
+        *)
+            echo rsync failed, not "mv'ing. Exit code was $?"
+            ;;
+    esac
+fi
+
+case "$move_it" in
+    True)
+        mv backup.1 backup.1.complete
+        ;;
+    False)
+        ;;
+    *)
+        echo "$0: Internal error: \$move_it not True or False: $move_it" 1>&2
+        exit 1
+        ;;
+esac
