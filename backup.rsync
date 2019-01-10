@@ -29,16 +29,6 @@ function usage
     exit "$retval"
 }
 
-if tty -s
-then
-    ON_TTY=True
-    #TTY_OPTS="-v --progress --stats"
-    TTY_OPTS="--progress --stats"
-else
-    ON_TTY=False
-    TTY_OPTS="--stats"
-fi
-
 while [ "$#" -ge 1 ]
 do
     case "$1" in
@@ -193,7 +183,7 @@ move_it=False
 if rsync \
     $RSYNC_OPTS \
     -a \
-    $TTY_OPTS \
+    --stats \
     $COMPRESS_FLAG \
     --delete \
     --link-dest=../backup.2.complete "$SRCDIR"/ backup.1
